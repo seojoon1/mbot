@@ -12,6 +12,8 @@ DB_PATH = os.getenv("DB_PATH", "mbot.db")
 # 경고가 이 횟수에 도달할 때마다 타임아웃
 WARN_LIMIT = int(os.getenv("WARN_LIMIT", "3"))
 TIMEOUT_MINUTES = int(os.getenv("TIMEOUT_MINUTES", "10"))
+# true면 메시지 관리 권한이 있는 유저는 검열 제외
+EXEMPT_MODS = os.getenv("EXEMPT_MODS", "false").lower() == "true"
 
 
 # ---------- DB ----------
@@ -108,8 +110,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
-    # 관리자는 검열 대상에서 제외
-    if message.author.guild_permissions.manage_messages:
+    if EXEMPT_MODS and message.author.guild_permissions.manage_messages:
         return
 
     content = normalize(message.content)
@@ -121,7 +122,7 @@ async def on_message(message: discord.Message):
         await message.delete()
     except discord.Forbidden:
         pass
-    await apply_warning(message.author, bot.user, f"금지어 사용", message.channel)
+    await apply_warning(message.author, bot.user, f"금지어 사용 (||{hit}||)", message.channel)
 
 
 # ---------- 경고 명령어 ----------
