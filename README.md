@@ -26,8 +26,6 @@ Copy-Item .env.example .env   # DISCORD_TOKEN 입력
 .venv\Scripts\python bot.py
 ```
 
-디스코드 개발자 포털의 Bot 설정에서 `Message Content Intent`와 `Server Members Intent`를 켜고,
-봇 초대 시 `bot`, `applications.commands` scope와 메시지 관리·멤버 타임아웃 권한을 부여하세요.
-봇 역할은 타임아웃할 유저의 역할보다 위에 있어야 합니다.
+봇 생성, 토큰 발급, Intents 설정, 서버 초대 방법은 **[TOKEN_SETUP.md](TOKEN_SETUP.md)** 를 참고하세요.
 
 봇 토큰(`.env`)은 절대 저장소에 올리지 마세요.
