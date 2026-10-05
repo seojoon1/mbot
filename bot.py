@@ -35,6 +35,12 @@ db.execute(
         PRIMARY KEY (guild_id, word)
     )"""
 )
+db.execute(
+    """CREATE TABLE IF NOT EXISTS guild_settings (
+        guild_id INTEGER PRIMARY KEY,
+        log_channel_id INTEGER
+    )"""
+)
 db.commit()
 
 
@@ -65,6 +71,20 @@ def get_banned_words(guild_id: int) -> list[str]:
     return [r[0] for r in rows]
 
 
+def get_log_channel_id(guild_id: int) -> int | None:
+    row = db.execute("SELECT log_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,)).fetchone()
+    return row[0] if row else None
+
+
+def set_log_channel_id(guild_id: int, channel_id: int | None):
+    db.execute(
+        "INSERT INTO guild_settings (guild_id, log_channel_id) VALUES (?, ?) "
+        "ON CONFLICT(guild_id) DO UPDATE SET log_channel_id = excluded.log_channel_id",
+        (guild_id, channel_id),
+    )
+    db.commit()
+
+
 def normalize(text: str) -> str:
     # 공백/일부 특수문자로 우회하는 것 방지 (예: "바 보", "바.보")
     return "".join(ch for ch in text.lower() if ch.isalnum())
@@ -88,16 +108,53 @@ class ModBot(discord.Client):
 bot = ModBot()
 
 
-async def apply_warning(member: discord.Member, moderator: discord.abc.User, reason: str, channel) -> int:
+async def send_log(guild: discord.Guild, embed: discord.Embed):
+    channel_id = get_log_channel_id(guild.id)
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if channel is None:
+        return
+    try:
+        await channel.send(embed=embed)
+    except discord.Forbidden:
+        pass
+
+
+async def apply_warning(
+    member: discord.Member,
+    moderator: discord.abc.User,
+    reason: str,
+    channel,
+    original: str | None = None,
+) -> int:
     count = add_warning(member.guild.id, member.id, moderator.id, reason)
     msg = f"⚠️ {member.mention} 경고 {count}회 (사유: {reason})"
+    timeout_note = None
     if count % WARN_LIMIT == 0:
         try:
             await member.timeout(timedelta(minutes=TIMEOUT_MINUTES), reason=f"경고 {count}회 누적")
+            timeout_note = f"{TIMEOUT_MINUTES}분 타임아웃"
             msg += f"\n⏱️ 경고 누적으로 {TIMEOUT_MINUTES}분 타임아웃"
         except discord.Forbidden:
+            timeout_note = "권한 부족으로 실패"
             msg += "\n(타임아웃 권한이 없어 타임아웃하지 못했습니다)"
     await channel.send(msg)
+
+    embed = discord.Embed(
+        title="⚠️ 경고" + (" (자동)" if moderator.id == bot.user.id else ""),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+    embed.add_field(name="대상", value=f"{member.mention} (`{member.id}`)", inline=True)
+    embed.add_field(name="담당", value=moderator.mention, inline=True)
+    embed.add_field(name="누적", value=f"{count}회", inline=True)
+    embed.add_field(name="사유", value=reason, inline=False)
+    embed.add_field(name="채널", value=channel.mention, inline=True)
+    if timeout_note:
+        embed.add_field(name="타임아웃", value=timeout_note, inline=True)
+    if original:
+        embed.add_field(name="원본 메시지", value=f"||{original[:1000]}||", inline=False)
+    await send_log(member.guild, embed)
     return count
 
 
@@ -122,7 +179,7 @@ async def on_message(message: discord.Message):
         await message.delete()
     except discord.Forbidden:
         pass
-    await apply_warning(message.author, bot.user, f"금지어 사용 (||{hit}||)", message.channel)
+    await apply_warning(message.author, bot.user, f"금지어 사용 (||{hit}||)", message.channel, message.content)
 
 
 # ---------- 경고 명령어 ----------
@@ -169,6 +226,30 @@ async def clear_warning(interaction: discord.Interaction, 유저: discord.Member
     await interaction.response.send_message(
         f"{유저.display_name}님의 경고 {cur.rowcount}건을 삭제했습니다.", ephemeral=True
     )
+    if cur.rowcount:
+        embed = discord.Embed(
+            title="🗑️ 경고 삭제", color=discord.Color.green(), timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="대상", value=f"{유저.mention} (`{유저.id}`)", inline=True)
+        embed.add_field(name="담당", value=interaction.user.mention, inline=True)
+        embed.add_field(name="삭제", value="전체" if 번호 is None else f"#{번호}", inline=True)
+        embed.add_field(name="남은 경고", value=f"{count_warnings(interaction.guild.id, 유저.id)}회", inline=True)
+        await send_log(interaction.guild, embed)
+
+
+# ---------- 설정 명령어 ----------
+@bot.tree.command(name="로그채널", description="경고 기록을 남길 채널을 설정합니다 (생략 시 해제)")
+@app_commands.describe(채널="로그 채널")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def log_channel(interaction: discord.Interaction, 채널: discord.TextChannel | None = None):
+    set_log_channel_id(interaction.guild.id, 채널.id if 채널 else None)
+    if 채널 is None:
+        await interaction.response.send_message("로그 채널을 해제했습니다.", ephemeral=True)
+        return
+    perms = 채널.permissions_for(interaction.guild.me)
+    note = "" if perms.send_messages and perms.embed_links else "\n⚠️ 봇에게 이 채널의 메시지 보내기/링크 첨부 권한이 없습니다."
+    await interaction.response.send_message(f"로그 채널을 {채널.mention}(으)로 설정했습니다.{note}", ephemeral=True)
 
 
 # ---------- 금지어 명령어 ----------
